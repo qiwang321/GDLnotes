@@ -5,3 +5,6 @@ src/not_mnist/notMNIST_small.tar.gz
 .idea/
 *.pickle
 *.zip
+*.sw[op]
+*.out
+*.pyc
