@@ -1,4 +1,5 @@
-# coding=utf-8
+#-*- coding: utf-8 -*-
+# pylint: disable=C,W
 import random
 import string
 import zipfile
@@ -30,6 +31,9 @@ if data_set is None:
 else:
     text = data_set
 
+# use word instead of characters
+text = text.split(' ')
+
 # Create a small validation set.
 valid_size = 1000
 valid_text = text[:valid_size]
@@ -38,40 +42,30 @@ train_size = len(train_text)
 print(train_size, train_text[:64])
 print(valid_size, valid_text[:64])
 
-# Utility functions to map characters to vocabulary IDs and back.
-vocabulary_size = len(string.ascii_lowercase) + 1  # [a-z] + ' '
-# ascii code for character
-first_letter = ord(string.ascii_lowercase[0])
+# Utility functions to map words to vocabulary IDs and back.
+vocabulary = {}
+for word in text:
+    vocabulary[word] = vocabulary.get(word, 0) + 1
+vocabulary = filter(lambda (word, cnt): cnt > 10, vocabulary.iteritems())
+vocabulary = map(lambda (word, cnt): word, vocabulary)
+if '<unk>' in vocabulary:
+    vocabulary.remove('<unk>')
+vocabulary.insert(0, '<unk>')
+vocabulary = list(enumerate(vocabulary))
+index_word = dict(vocabulary)
+word_index = dict(map(lambda (ind, word): (word, ind), vocabulary))
+vocabulary_size = len(vocabulary)
+
+print '==================== vocabulary_size is %s =================' % vocabulary_size
+print(word_index.get('this'), word_index.get('z'), word_index.get(' '), word_index.get('ï'), word_index.get('<unk>'))
+print(index_word.get(1), index_word.get(26), index_word.get(0))
 
 
-def char2id(char):
-    if char in string.ascii_lowercase:
-        return ord(char) - first_letter + 1
-    elif char == ' ':
-        return 0
-    else:
-        print('Unexpected character: %s' % char)
-        return 0
 
-
-def id2char(dictid):
-    if dictid > 0:
-        return chr(dictid + first_letter - 1)
-    else:
-        return ' '
-
-
-print(char2id('a'), char2id('z'), char2id(' '), char2id('ï'))
-print(id2char(1), id2char(26), id2char(0))
-
-bi_voc_size = vocabulary_size * vocabulary_size
-
-
-class BiBatchGenerator(object):
+class BatchGenerator(object):
     def __init__(self, text, batch_size, num_unrollings):
         self._text = text
-        self._text_size_in_chars = len(text)
-        self._text_size = self._text_size_in_chars // 2  # in bigrams
+        self._text_size = len(text)
         self._batch_size = batch_size
         self._num_unrollings = num_unrollings
         segment = self._text_size // batch_size
@@ -82,13 +76,9 @@ class BiBatchGenerator(object):
         batch = np.zeros(shape=self._batch_size, dtype=np.int)
         # print 'batch idx %i' %
         for b in range(self._batch_size):
-            char_idx = self._cursor[b] * 2
-            ch1 = char2id(self._text[char_idx])
-            if self._text_size_in_chars - 1 == char_idx:
-                ch2 = 0
-            else:
-                ch2 = char2id(self._text[char_idx + 1])
-            batch[b] = ch1 * vocabulary_size + ch2
+            word_idx = self._cursor[b]
+            word = word_index.get(self._text[word_idx], 0)
+            batch[b] = word
             self._cursor[b] = (self._cursor[b] + 1) % self._text_size
         return batch
 
@@ -100,39 +90,27 @@ class BiBatchGenerator(object):
         return batches
 
 
-def bi2str(encoding):
-    return id2char(encoding // vocabulary_size) + id2char(encoding % vocabulary_size)
+def batch2string(encodings):
+    return [index_word.get(e, '<unk>') for e in encodings]
 
 
-def bigrams(encodings):
-    return [bi2str(e) for e in encodings]
-
-
-def bibatches2string(batches):
+def batches2string(batches):
     s = [''] * batches[0].shape[0]
     for b in batches:
-        s = [''.join(x) for x in zip(s, bigrams(b))]
+        s = [' '.join(x) for x in zip(s, batch2string(b))]
     return s
 
 
-bi_onehot = np.zeros((bi_voc_size, bi_voc_size))
-np.fill_diagonal(bi_onehot, 1)
-
-
-def bigramonehot(encodings):
-    return [bi_onehot[e] for e in encodings]
-
-
-train_batches = BiBatchGenerator(train_text, 8, 8)
-valid_batches = BiBatchGenerator(valid_text, 1, 1)
+train_batches = BatchGenerator(train_text, 8, 8)
+valid_batches = BatchGenerator(valid_text, 1, 1)
 
 batch = train_batches.next()
 print(batch)
-print(bibatches2string(batch))
-# print bigramonehot(batch)
-print (bibatches2string(train_batches.next()))
-print (bibatches2string(valid_batches.next()))
-print (bibatches2string(valid_batches.next()))
+print(batches2string(batch))
+# print onehot(batch)
+print (batches2string(train_batches.next()))
+print (batches2string(valid_batches.next()))
+print (batches2string(valid_batches.next()))
 
 
 def logprob(predictions, labels):
@@ -167,13 +145,22 @@ def one_hot_voc(prediction, size=vocabulary_size):
     return p
 
 
+def onehot(encodings, size=vocabulary_size):
+    res = []
+    for e in encodings:
+        p = np.zeros(shape=[1, size], dtype=np.float)
+        p[0, e] = 1.0
+        res.append(p)
+    return res
+
+
 def random_distribution(size=vocabulary_size):
     """Generate a random column of probabilities."""
     b = np.random.uniform(0.0, 1.0, size=[1, size])
     return b / np.sum(b, 1)[:, None]
 
 
-def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=bi_voc_size):
+def create_lstm_graph(num_nodes, num_unrollings, batch_size, embedding_size=vocabulary_size):
     with tf.Graph().as_default() as g:
         # input to all gates
         x = tf.Variable(tf.truncated_normal([embedding_size, num_nodes * 4], -0.1, 0.1), name='x')
@@ -185,15 +172,18 @@ def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=b
         saved_output = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
         saved_state = tf.Variable(tf.zeros([batch_size, num_nodes]), trainable=False)
         # Classifier weights and biases.
-        w = tf.Variable(tf.truncated_normal([num_nodes, bi_voc_size], -0.1, 0.1))
-        b = tf.Variable(tf.zeros([bi_voc_size]))
-        # embeddings for all possible bigrams
-        embeddings = tf.Variable(tf.random_uniform([bi_voc_size, embedding_size], -1.0, 1.0), name='embeddings')
+        w = tf.Variable(tf.truncated_normal([num_nodes, vocabulary_size], -0.1, 0.1))
+        b = tf.Variable(tf.zeros([vocabulary_size]))
+        # embeddings for all possible words
+        embeddings = tf.Variable(tf.random_uniform([vocabulary_size, embedding_size], -1.0, 1.0), name='embeddings')
         # one hot encoding for labels in
-        np_embeds = np.zeros((bi_voc_size, bi_voc_size))
-        np.fill_diagonal(np_embeds, 1)
-        bigramonehot = tf.constant(np.reshape(np_embeds, -1), dtype=tf.float32, shape=[bi_voc_size, bi_voc_size],
-                                   name='bigramonehot')
+        #np_embeds = np.zeros((vocabulary_size, vocabulary_size))
+        #np.fill_diagonal(np_embeds, 1)
+        #onehot = tf.constant(np.reshape(np_embeds, -1), dtype=tf.float32, shape=[vocabulary_size, vocabulary_size],
+        #                           name='onehot')
+
+
+
         tf_keep_prob = tf.placeholder(tf.float32, name='tf_keep_prob')
 
         # Definition of the cell computation.
@@ -209,16 +199,18 @@ def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=b
             output = tf.nn.dropout(output_gate * tf.tanh(state), tf_keep_prob)
             return output, state
 
-        # Input data. [num_unrollings, batch_size] -> one hot encoding removed, we send just bigram ids
+        # Input data. [num_unrollings, batch_size] -> one hot encoding removed, we send just word ids
         tf_train_data = tf.placeholder(tf.int32, shape=[num_unrollings + 1, batch_size], name='tf_train_data')
         train_data = list()
         for i in tf.split(0, num_unrollings + 1, tf_train_data):
             train_data.append(tf.squeeze(i))
         train_inputs = train_data[:num_unrollings]
         train_labels = list()
+        #train_labels = train_data[1:]
         for l in train_data[1:]:
             # train_labels.append(tf.nn.embedding_lookup(embeddings, l))
-            train_labels.append(tf.gather(bigramonehot, l))
+            #train_labels.append(tf.gather(onehot, l))
+            train_labels.append(tf.one_hot(l, vocabulary_size))
             # train_labels.append(tf.reshape(l, [batch_size,1]))  # labels are inputs shifted by one time step.
 
         # Unrolled LSTM loop.
@@ -227,7 +219,7 @@ def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=b
         state = saved_state
         # python loop used: tensorflow does not support sequential operations yet
         for i in train_inputs:  # having a loop simulates having time
-            # embed input bigrams -> [batch_size, embedding_size]
+            # embed input words -> [batch_size, embedding_size]
             output, state = lstm_cell(tf.nn.embedding_lookup(embeddings, i), output, state)
             outputs.append(output)
 
@@ -237,6 +229,11 @@ def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=b
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits,
                                                                           tf.concat(0, train_labels)
                                                                           ), name='loss')
+            #logits = tf.nn.xw_plus_b(tf.concat(0, outputs), w, b)
+            #num_sampled = 64
+            #loss = tf.reduce_mean(
+            #    tf.nn.sampled_softmax_loss(w, b, tf.concat(0, outputs), train_labels,
+            #                              num_sampled, vocabulary_size))
         # Optimizer.
         global_step = tf.Variable(0, name='global_step')
         learning_rate = tf.train.exponential_decay(10.0, global_step, 500, 0.9, staircase=True, name='learning_rate')
@@ -265,13 +262,13 @@ def create_lstm_graph_bi(num_nodes, num_unrollings, batch_size, embedding_size=b
 
 
 # test graph
-create_lstm_graph_bi(64, 10, 128, 32)
+create_lstm_graph(64, 10, 128, 32)
 
 
-def bitrain(g, num_steps, summary_frequency, num_unrollings, batch_size):
+def train(g, num_steps, summary_frequency, num_unrollings, batch_size):
     # initalize batch generators
-    train_batches = BiBatchGenerator(train_text, batch_size, num_unrollings)
-    valid_batches = BiBatchGenerator(valid_text, 1, 1)
+    train_batches = BatchGenerator(train_text, batch_size, num_unrollings)
+    valid_batches = BatchGenerator(valid_text, 1, 1)
     optimizer = g.get_tensor_by_name('optimizer:0')
     loss = g.get_tensor_by_name('loss:0')
     train_prediction = g.get_tensor_by_name('train_prediction:0')
@@ -289,7 +286,7 @@ def bitrain(g, num_steps, summary_frequency, num_unrollings, batch_size):
         mean_loss = 0
         for step in range(num_steps):
             batches = train_batches.next()
-            # print bibatches2string(batches)
+            # print batches2string(batches)
             # print np.array(batches)
             # feed_dict = dict()
             # for i in range(num_unrollings + 1):
@@ -306,31 +303,27 @@ def bitrain(g, num_steps, summary_frequency, num_unrollings, batch_size):
                 mean_loss = 0
                 labels = list(batches)[1:]
                 print predictions
+                labels = np.concatenate([onehot(l) for l in labels])
                 print labels
-                print len(predictions), len(labels)
-                labels = np.concatenate([bigramonehot(l) for l in labels])
-                print labels
-                print len(labels)
-           
-                # print labels.shape[0]
-                print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels))))
+                print('Minibatch perplexity: %.2f' % float(np.exp(logprob(predictions, labels)/len(labels))))
+                #print('Minibatch perplexity: %.2f' % float(logprob(predictions, labels)))
                 if step % (summary_frequency * 10) == 0:
                     # Generate some samples.
                     print('=' * 80)
                     # print embeddings.eval()
                     for _ in range(5):
-                        # print random_distribution(bi_voc_size)
-                        feed = np.argmax(sample(random_distribution(bi_voc_size), bi_voc_size))
-                        sentence = bi2str(feed)
+                        # print random_distribution(vocabulary_size)
+                        feed = np.argmax(sample(random_distribution(vocabulary_size), vocabulary_size))
+                        sentence = index_word[feed]
                         reset_sample_state.run()
                         for _ in range(49):
                             # prediction = similarity.eval({sample_input: [feed]})
                             # nearest = (-prediction[0]).argsort()[0]
                             prediction = sample_prediction.eval({sample_input: [feed], keep_prob: 1.0})
                             # print prediction
-                            feed = np.argmax(sample(prediction, bi_voc_size))
+                            feed = np.argmax(sample(prediction, vocabulary_size))
                             # feed = np.argmax(prediction[0])
-                            sentence += bi2str(feed)
+                            sentence += ' ' +  index_word[feed]
                         print(sentence)
                     print('=' * 80)
                 # Measure validation set perplexity.
@@ -340,9 +333,12 @@ def bitrain(g, num_steps, summary_frequency, num_unrollings, batch_size):
                     b = valid_batches.next()
                     predictions = sample_prediction.eval({sample_input: b[0], keep_prob: 1.0})
                     # print(predictions)
-                    valid_logprob = valid_logprob + logprob(predictions, one_hot_voc(b[1], bi_voc_size))
+                    valid_logprob = valid_logprob + logprob(predictions, one_hot_voc(b[1], vocabulary_size))
                 print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
 
 
-graph = create_lstm_graph_bi(512, 32, 32, 128)
-bitrain(graph, 4001, 1, 32, 32)
+num_unrollings = 5
+batch_size=16
+num_nodes = 128
+graph = create_lstm_graph(num_nodes, num_unrollings, batch_size, 128)
+train(graph, 4001, 1, num_unrollings, batch_size)
