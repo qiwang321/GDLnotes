@@ -337,8 +337,8 @@ def train(g, num_steps, summary_frequency, num_unrollings, batch_size):
                 print('Validation set perplexity: %.2f' % float(np.exp(valid_logprob / valid_size)))
 
 
-num_unrollings = 5
+num_unrollings = 8
 batch_size=16
 num_nodes = 128
 graph = create_lstm_graph(num_nodes, num_unrollings, batch_size, 128)
-train(graph, 4001, 1, num_unrollings, batch_size)
+train(graph, 40000, 10, num_unrollings, batch_size)
